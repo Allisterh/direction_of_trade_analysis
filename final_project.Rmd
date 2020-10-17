@@ -1,0 +1,178 @@
+---
+title: "Direction of Trade and Financial Development"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Abstract
+
+The purpose of this exploratory analysis is to determine which countries have experienced the greatest trade growth with the United States since 1980, as well as to determine if the International Monetary Fund's Financial Development Index can be used as a method of determining trade growth in imports and/or exports.
+
+#Set-up Procedures
+
+The following packages were installed in the R session used throughout this report and will be necessary for replication. *tidyverse* may be substituted for smaller individual packages, but the size of the files and package size or not restrictive on most modern systems.
+
+```{r results='hide', message=FALSE, warning=FALSE}
+library(tidyverse)
+library(dplyr)
+library(reshape2)
+library(Hmisc)
+```
+
+#Datasets
+
+All datasets have been taken from the International Monetary Fund's (IMF) open data query windows accessible in their online portal. These includes three datasets as detailed below. Each dataset underwent unique transformations which will be explained in detail and include the R code used.
+
+##Direction of Trade Dataset
+
+The first and most crucial dataset is that of Direction of Trade (DOT). These figures are collected or estimated for all included nations by IMF data collectors and are measured for both imports and exports. The standard currency is United States Dollars (USD) and as such all calculations will be using this currency.
+
+There are infact two sets of data which must be downloaded independently into an .xlsx format. These files were downloaded and slightly modified in Microsoft Excel to remove extraneous headers and rename columns to their full names for clarity. After these simple data cleansing steps, the .xlsx files were changed to .csv and imported into R.
+
+Because the datasets was set up to appear as a PivotTable, it was necessary to *melt* the frames into a columnar format for later changes to be applied. Additionally, because the datasets are much the same except for the the fact that one is import and the other is export, it made sense to combine the tables and rename the columns for Import and Export. Take note that the variable column should state Year, but the rename function was not able to capture the correct column for reassignment.
+
+
+```{r}
+DOT_imports <- read.csv("C:/Users/jewel/Downloads/US_imports.csv", header = TRUE, sep = ",")
+DOT_imports <- melt(data =  DOT_imports, id.vars = "Area", value.name = "Import")
+
+DOT_exports <- read.csv("C:/Users/jewel/Downloads/US_exports.csv", header = TRUE, sep = ",")
+DOT_exports <- melt(data =  DOT_exports, id.vars = "Area", value.name = "Export")
+
+DOT_merge <- merge(DOT_imports, DOT_exports, by.x = c("Area", "variable"), by.y = c("Area", "variable"), all.x = TRUE)
+```
+
+##Consumer Price Index Dataset
+
+The Consumer Price Index is an index calculated using the value of a single basket of goods over time. It is regularly used to measure inflation, and as such will be used to remove inflationary effects on trade statistics to show the true growth in the figures over time. The CPI was also in a Pivot styel table and was melted to correct it. This data was then added to the combined dataset for later calculations.
+
+```{r}
+CPI <- read.csv("C:/Users/jewel/Downloads/Consumer_Price_Index_CPI.csv", header = TRUE, sep = ",")
+CPI <- melt(data = CPI, id.vars = "Area", value.name = "CPI")
+
+DOT_CPI_merge <- merge(DOT_merge, CPI, by.x = "variable", by.y = "variable", all.x = TRUE)
+DOT_CPI_merge$Area.y <- NULL
+```
+
+##Financial Development Index
+
+The IMF Financial Development Index (FDI) is designed as a measure of several economic indicators (such as efficiency, accessibility, etc.) that are designed to provide a high-level view of the economic soundness of a given country and time period. This index is a weighted average of several other indexes, and as such could be subdivided into further study, but that is not the focus of this study. Like the other datasets before it, the FDI data was extracted to Excel, slightly modified, converted to a .csv, and then uploaded to the R session.
+
+Once uploaded, the data was again melted and combined to create a large single dataset from which to work from.
+
+```{r}
+FDI <- read.csv("C:/Users/jewel/Downloads/Financial_Development_FD.csv", header = TRUE, sep = ",")
+FDI <- melt(data = FDI, id.vars = "Area", value.name = "FDI")
+
+D_C_F_merge <- merge(DOT_CPI_merge, FDI, by.x = c("Area.x", "variable"), by.y = c("Area", "variable"), all.x = TRUE)
+D_C_F_merge$Area.y <- NULL
+```
+
+#Analysis
+
+##Inflation Correction
+
+Of primary concern were the inflation adjusted value of the Imports and Exports. Because the combined dataframe now includes all three values, we can first mutate the columns to create new calculated values.
+
+```{r warning = FALSE}
+D_C_F_merge <- D_C_F_merge %>% mutate(Import_adjusted = Import / CPI) %>% mutate(Export_adjusted = Export / CPI)
+D_C_F_merge <- D_C_F_merge %>%
+  mutate(Year = as.integer(substring(variable, 2, 5)))
+D_C_F_merge$variable <- NULL
+
+head(D_C_F_merge)
+```
+
+##Growth by country 
+
+One of the first questions that came to mind was which country has experienced the greatest growth over the total timeframe and to see the trend of all areas. To do so, a graph was employed to show large trends and open new avenues for dissection.
+
+```{r warning = FALSE}
+ggplot(data = D_C_F_merge, aes(x = Year, y = Import_adjusted, group = Area.x)) +
+  geom_line() +
+  geom_point()
+
+```
+
+It appears that the Import_adjusted variable does indeed have an upward trend. One question that arises though is how strong are the correlations by each nation? In order to do so the D_C_F_merge dataset was converted to a list column to to calculate the total change experienced and show the largest gaining nations in Import_adjusted and Export_adjusted.
+
+The first step was to create the list column nested object in order to apply the linear regression on all Area.x values (Countries).
+
+```{r}
+By_country <- D_C_F_merge %>%
+  group_by(Area.x) %>%
+  nest()
+```
+
+With this nested frame we can then create a function that defines a linear regression and apply it to all Area.x values in the nested frame. Per the recommendation of the #R for Data Science# book by Hadley Wickham the linear models have also been stored in the nested object as a new data type column.
+
+```{r}
+Import_reg <- function(df) {
+  lm(Import_adjusted ~ Year, data = df)
+}
+
+Imp_by_country <- By_country %>%
+  mutate(models = map(data, Import_reg))
+
+Imp_by_country
+```
+
+Once again, under the direction of #R for Data Science#, the models were unnested in order to analyze some of the metadaat of each model on a by country basis.
+
+```{r}
+Glance <- Imp_by_country %>%
+  mutate(Glance = map(models, broom::glance)) %>%
+  unnest(Glance, .drop = TRUE)
+
+Glance %>%
+  arrange(desc(r.squared))
+```
+
+As we can see, there are several countries where the model describes the growth quite well, which begs the question: which countries have the strongest growth? To look more closely at this, we can use #broom::tidy# to see the model coeffecients.
+
+```{r}
+Tidy_glance <- Imp_by_country %>%
+  mutate(Tidy_glance = map(models, broom::tidy)) %>%
+  unnest(Tidy_glance, .drop = TRUE)
+
+Tidy_glance %>% 
+  arrange(desc(estimate))
+```
+Here we can see the fastest growing nations, of which several are quite large, but we can also see our error is quite large. It is possible that more complex models would reduce the error terms, but this is again beyond the scope of this project.
+
+For the time being, we can assume that there is a noticeable level of growth in some nations, and that some nations have a clearly linear growth.
+
+##FDI Effects
+
+The first question of interest in regards to Financial Development Index is whether there is an increase in FDI statistics over time. As this index in does not need to be adjusted to match as single year (as opposed to the inflation correction of the Import and Export figures) that step will be bypassed and the FDI shown in a graph per Country.
+
+```{r}
+ggplot(D_C_F_merge, aes(x = Year, y = FDI, group = Area.x)) +
+  geom_line() +
+  geom_point()
+```
+
+This data is quite difficult to draw any conclusions on, however, we can see a slight general trend for some countries if we look carefully. Although not quantitatively defined, this gives us some reason to dive deeper and see if our adjusted imports correlate strongly with the FDI. To do this, the Pearson correlation will be used on all non-missing pairs. We could run this on a per country basis, however, the question is first broader than that: is there any effect on a large scale? If the answer is yes then perhaps a country by country dissection would be of value.
+
+```{r}
+Pearson_test <- cor.test(D_C_F_merge$Import, D_C_F_merge$FDI, method = "pearson")
+
+Pearson_test
+```
+
+With a truly massive t-value in our Import and FDI Pearson's correlation, it is clear that the FDI has a substantial impact on the Imports to the US from other nations. This would indicate that countries with a high FDI are also more frequent/higher volume trading partners with the US. This may be due to size of the high FDI markets, or the impact of FDI factors on Imports, but at this stage it cannot be seen which.
+
+Further study on this topic would be useful to determine how the FDI effects each nation individually. This way a clearer correlation sould be seen and perhaps stronger models could be designed to predict future growth from this dataset.
+
+#Conclusions
+
+This analysis demonstrates several intersting ideas as well as opens room for further study and more nuanced analysis. As a first dive we can clearly see that there has been an substantial increase in the Import and Export markets to and from the United States. Additionally we can see that some nations have a clear linear correlation between year and Imports (and likely Exports as the two tend to move in tandem), and that there are some countries which have a substantial growth rate (both with a potentially very large error term). Lastly, a correlation between the FDI and Imports was established, suggesting a potential causal effect of FDI on Imports (or possibly vice versa).
+
+Future study could dive further into the models on a per country basis to determine the best predictive models for each and which factors play the greatest role in predicting future growth. Additionally, further study into why the FDI and Imports are so highly correlated would be necessary in order to determine if a causal relationship exists or if the terms are biased in their calculations.
+
+As an investor or economist, it should be evident that investment into the fastest growing importing/exporting countries, or those that are substantially increasing their FDI scores would likely be highly lucrative investments, and perhaps a good avenue for future research to see which of hte FDI indexes are the most impactful in such a scenario.
